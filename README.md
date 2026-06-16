@@ -15,25 +15,22 @@
 
 ## 桌面版（推荐 · 图形界面）
 
-双击 `启动桌面版.bat` 即可，首次会自动安装依赖并构建界面，之后直接启动。
+1、下载整个包后，双击 `启动桌面版.bat` 即可，首次会自动安装依赖并构建界面，之后直接启动。
 
-```
-双击  启动桌面版.bat
-```
+<img width="396" height="402" alt="1c99b54906ffc7fe2746bdb262d0817e" src="https://github.com/user-attachments/assets/7a4fbe69-dbe7-48ce-805b-97ef8c0262e6" />
 
-界面功能：
+2、点击右上角添加账号，会弹出浏览器窗口
 
-- **状态栏**：显示当前登录账号、ZCode 是否运行、是否有可回滚备份
-- **额度概览**：读取当前 token 查询 ZCode 总额度、已用/剩余额度和分项额度
-- **账号卡片**：每个账号一张卡片，支持「一键切换 / 重命名 / 删除」，当前账号高亮
-- **捕获当前账号**：把 ZCode 当前登录的账号存为快照（右上角按钮）
-- **回滚上次切换**：一键恢复到切换前（底栏按钮）
+<img width="2592" height="1706" alt="image" src="https://github.com/user-attachments/assets/959e26a3-a8a2-4a5d-8525-0b93ef9d2346" />
 
-界面采用 Dark Mode（OLED）设计系统，符合 WCAG AAA 对比度标准，所有破坏性操作（切换/删除/回滚）都会二次确认，切换过程有 loading 态和 Toast 反馈。
+3、在弹出的浏览器中输入完毕账号信息，登录以后，就无须操作了，软件自行获取账号信息
 
-**开发模式**（改代码用，热更新）：双击 `启动桌面版-开发模式.bat`。
+<img width="2997" height="1242" alt="bf0b9f0e45315aafa8d6d48d29b04536" src="https://github.com/user-attachments/assets/7fffdf6a-ec40-47d8-98c9-1eb76ddb6dad" />
 
-> 故障排查：若启动后**不弹窗口**，检查系统环境变量是否设了 `ELECTRON_RUN_AS_NODE=1`（启动脚本已自动清除），并查看 `desktop/main.log`。
+4、等待系统获取完账号信息以后，列表会出现这样一条数据
+
+<img width="1899" height="1250" alt="bc06e94e286224aa6c9c624fcfff2984" src="https://github.com/user-attachments/assets/48953c59-3f50-4e3d-8332-4ee4074c1ad9" />
+
 
 ---
 

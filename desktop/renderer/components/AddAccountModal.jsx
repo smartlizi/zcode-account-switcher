@@ -1,34 +1,36 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, UserPlus, Download, CheckCircle2, LogIn, ShieldCheck } from 'lucide-react';
+import { Loader2, UserPlus, CheckCircle2, LogIn, ShieldCheck } from 'lucide-react';
 
 /**
- * 添加账号弹窗（全自动：无痕浏览器 + 自动换 token）
+ * 添加账号弹窗（CLI OAuth + 系统浏览器跳转）
  *
  * 用户只需点「开始」，工具会：
- *   1. （首次）自动下载 chromium
- *   2. 自动打开无痕浏览器到登录页
- *   3. 用户在浏览器输账号密码登录
- *   4. 登录成功的瞬间，工具自动换 token + 写盘 + 快照
- *   5. 弹窗显示「✓ 已添加」并自动关闭
+ *   1. 调 CLI OAuth init 拿授权链接，自动用系统浏览器打开
+ *   2. 用户在自带浏览器里登录 Z.ai 账号（无需回工具点任何按钮）
+ *   3. 工具后台轮询 poll 接口，登录成功的瞬间自动写盘 + 快照
+ *   4. 弹窗显示「✓ 已添加」并自动关闭
+ *
+ * 相比旧的无痕浏览器方案：
+ *   - 去掉 Chromium 170MB 依赖
+ *   - CLI OAuth 返回的 JWT 自带 billing 权限，登录后即可查额度
+ *   - 用户自带浏览器风控更友好
  *
  * 全程通过 onFlowEvent 事件接收主进程的阶段回调。
  */
 export default function AddAccountModal({ onClose, onDone, showToast }) {
-  // phase: checking | installing | opening | waiting | detected | exchanging | saved | error
-  const [phase, setPhase] = useState('checking');
+  // phase: opening | waiting | exchanging | saved | error
+  const [phase, setPhase] = useState('opening');
   const [progressMsg, setProgressMsg] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   // 局部 busy：只禁用弹窗内按钮，不影响工具栏（全局 busy 会卡死所有操作）
   const [busy, setBusy] = useState(true);
   const unsubFlowRef = useRef(null);
-  const unsubProgressRef = useRef(null);
 
   const cleanup = () => {
     if (unsubFlowRef.current) { unsubFlowRef.current(); unsubFlowRef.current = null; }
-    if (unsubProgressRef.current) { unsubProgressRef.current(); unsubProgressRef.current = null; }
   };
-  // 卸载兜底：取消事件订阅 + 通知主进程关浏览器（防后台残留）
+  // 卸载兜底：取消事件订阅 + 通知主进程停轮询
   useEffect(() => {
     return () => {
       cleanup();
@@ -36,7 +38,7 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
     };
   }, []);
 
-  // 入口：检测 chromium → 启动全自动流程
+  // 入口：启动 CLI OAuth 流程
   useEffect(() => {
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -45,35 +47,19 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
   const start = async () => {
     setError('');
     setBusy(true);
-    setPhase('checking');
-    setProgressMsg('检查浏览器环境...');
-
-    // 1. 检测 chromium
-    const check = await window.api.oauthCheckBrowser();
-    if (!check.ok) { fail(check.error); return; }
-
-    // 2. 未装则下载
-    if (!check.data.installed) {
-      setPhase('installing');
-      setProgressMsg('开始下载...');
-      unsubProgressRef.current = window.api.onOauthProgress((msg) => setProgressMsg(msg));
-      const inst = await window.api.oauthInstall();
-      if (unsubProgressRef.current) { unsubProgressRef.current(); unsubProgressRef.current = null; }
-      if (!inst.ok) { fail(inst.error || 'Chromium 下载失败'); return; }
-    }
-
-    // 3. 启动全自动流程（先订阅事件，避免漏早期事件）
     setPhase('opening');
-    setProgressMsg('正在打开浏览器...');
+    setProgressMsg('正在打开系统浏览器...');
+
+    // 先订阅事件，避免漏早期事件
     unsubFlowRef.current = window.api.onFlowEvent((event) => handleFlowEvent(event));
 
-    const r = await window.api.oauthAutoStart({});
+    const r = await window.api.oauthStart({});
     if (!r.ok) {
       if (unsubFlowRef.current) { unsubFlowRef.current(); unsubFlowRef.current = null; }
-      fail(r.needInstall ? 'Chromium 未就绪，请重试' : r.error);
+      fail(r.error);
       return;
     }
-    // oauthAutoStart 返回后，流程在后台跑，后续靠 onFlowEvent 推进
+    // oauthStart 返回后，流程在后台跑（开浏览器 + 轮询），后续靠 onFlowEvent 推进
   };
 
   // 处理流程事件
@@ -81,29 +67,22 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
     switch (event.type) {
       case 'browser-open':
         setPhase('opening');
-        setProgressMsg(event.message || '浏览器已打开');
+        setProgressMsg(event.message || '正在打开系统浏览器');
         break;
       case 'waiting-login':
         setPhase('waiting');
         setProgressMsg(event.message || '等待登录');
         break;
-      case 'detected':
-        setPhase('detected');
-        setEmail(event.email || '');
-        break;
       case 'exchanging':
         setPhase('exchanging');
-        setProgressMsg(event.message || '正在换取 token...');
-        break;
-      case 'done':
-        // 换 token 成功，等 saved（写盘完成）
-        setPhase('exchanging');
-        setProgressMsg('token 已获取，正在保存账号...');
+        setProgressMsg(event.message || '正在保存账号...');
+        if (event.email) setEmail(event.email);
         break;
       case 'saved':
         setPhase('saved');
         setBusy(false);
         cleanup();
+        if (event.email) setEmail(event.email);
         if (event.skipped) {
           showToast('info', '该账号已存在（' + (event.account?.label || '已有') + '）');
         } else {
@@ -135,27 +114,24 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
     start();
   };
 
-  // 关闭时取消流程（避免后台浏览器残留）
+  // 关闭时取消流程（停轮询；系统浏览器由用户自行关闭）
   const handleClose = () => {
-    if (phase === 'installing' || phase === 'exchanging' || phase === 'saved') return;
+    if (phase === 'exchanging' || phase === 'saved') return;
     cleanup();
     window.api.oauthCancel();
     onClose();
   };
 
   const phaseLabel = {
-    checking: '初始化',
-    installing: '下载浏览器',
     opening: '打开登录页',
     waiting: '等待登录',
-    detected: '已检测到登录',
     exchanging: '保存中',
     saved: '完成',
     error: '出错',
   }[phase] || '';
 
   return (
-    <div className="modal-overlay" onClick={phase === 'installing' || phase === 'exchanging' || phase === 'saved' ? undefined : handleClose}>
+    <div className="modal-overlay" onClick={phase === 'exchanging' || phase === 'saved' ? undefined : handleClose}>
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h2>
           <UserPlus size={18} />
@@ -163,24 +139,13 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
           {phaseLabel && <span className="phase-tag">{phaseLabel}</span>}
         </h2>
 
-        {/* 下载 chromium */}
-        {phase === 'installing' && (
-          <div className="oauth-panel">
-            <div className="install-box">
-              <Download size={28} className="spin-slow" />
-              <strong>首次使用需下载浏览器引擎</strong>
-              <span className="progress-msg">{progressMsg}</span>
-              <span className="progress-hint">约 170MB，仅下载一次，之后长期复用</span>
-            </div>
-          </div>
-        )}
-
-        {/* checking / opening 通用 loading */}
-        {(phase === 'checking' || phase === 'opening') && (
+        {/* opening 通用 loading */}
+        {phase === 'opening' && (
           <div className="oauth-panel">
             <div className="install-box">
               <Loader2 size={28} className="spin" />
               <strong>{progressMsg || '准备中...'}</strong>
+              <span className="progress-hint">即将跳转到系统浏览器登录</span>
             </div>
           </div>
         )}
@@ -190,7 +155,7 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
           <div className="oauth-panel">
             <div className="waiting-box">
               <LogIn size={34} />
-              <strong>请在弹出的浏览器窗口中登录</strong>
+              <strong>请在系统浏览器窗口中登录</strong>
               <span>工具会自动检测登录状态，登录成功后自动完成添加</span>
               <span className="progress-hint">支持账号密码 / 手机号登录（登录后无需做任何操作）</span>
               <Loader2 size={20} className="spin" />
@@ -198,14 +163,14 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
           </div>
         )}
 
-        {/* 已检测到登录 / 正在换 token */}
-        {(phase === 'detected' || phase === 'exchanging') && (
+        {/* 正在保存账号 */}
+        {phase === 'exchanging' && (
           <div className="oauth-panel">
             <div className="install-box">
               <ShieldCheck size={28} color="#22c55e" />
-              <strong>{phase === 'detected' ? `检测到登录：${email}` : '正在换取 token 并保存...'}</strong>
-              {phase === 'exchanging' && <Loader2 size={20} className="spin" />}
-              {phase === 'exchanging' && <span className="progress-hint">全程自动化，请稍候</span>}
+              <strong>登录成功，正在保存账号...</strong>
+              <Loader2 size={20} className="spin" />
+              <span className="progress-hint">全程自动化，请稍候</span>
             </div>
           </div>
         )}

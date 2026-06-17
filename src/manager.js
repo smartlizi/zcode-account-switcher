@@ -132,9 +132,87 @@ function rename(id, label, note) {
   return meta;
 }
 
+function safeId(id) {
+  const s = String(id || '').trim();
+  if (!/^[a-zA-Z0-9_-]{4,64}$/.test(s)) throw new Error('非法账号 id: ' + s);
+  return s;
+}
+
+function atomicWriteJson(filePath, data, compact = false) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = filePath + '.tmp-' + process.pid + '-' + Date.now();
+  fs.writeFileSync(tmp, JSON.stringify(data, null, compact ? 0 : 2), 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+function assertJsonText(text, name) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error(name + ' 为空');
+  try { JSON.parse(text); } catch (e) { throw new Error(name + ' 不是有效 JSON: ' + e.message); }
+}
+
+/** 导出账号快照（默认全部账号） */
+function exportAccounts(ids) {
+  ensureStore();
+  const wanted = Array.isArray(ids) && ids.length ? new Set(ids.map(String)) : null;
+  const metas = list().filter((m) => !wanted || wanted.has(m.id));
+  const accounts = [];
+  for (const meta of metas) {
+    const id = safeId(meta.id);
+    const sp = snapPath(id);
+    if (!fs.existsSync(sp)) continue;
+    accounts.push({
+      meta,
+      snapshot: JSON.parse(fs.readFileSync(sp, 'utf8')),
+    });
+  }
+  return {
+    version: 1,
+    app: 'zcode-account-switcher',
+    exportedAt: Date.now(),
+    accounts,
+  };
+}
+
+/** 导入账号快照，默认跳过已存在账号 */
+function importAccounts(payload, opts = {}) {
+  ensureStore();
+  const overwrite = !!opts.overwrite;
+  if (!payload || typeof payload !== 'object') throw new Error('导入文件格式不正确');
+  if (!Array.isArray(payload.accounts)) throw new Error('导入文件缺少 accounts 数组');
+
+  const imported = [];
+  const skipped = [];
+  for (const item of payload.accounts) {
+    try {
+      const meta = item && item.meta;
+      const snapshot = item && item.snapshot;
+      const id = safeId(meta && meta.id);
+      if (!snapshot || typeof snapshot !== 'object') throw new Error('缺少 snapshot');
+      assertJsonText(snapshot.credentials, 'credentials');
+      assertJsonText(snapshot.config, 'config');
+
+      if (!overwrite && (fs.existsSync(metaPath(id)) || fs.existsSync(snapPath(id)))) {
+        skipped.push({ id, label: meta.label, reason: '已存在' });
+        continue;
+      }
+
+      const cleanMeta = { ...meta, id };
+      atomicWriteJson(snapPath(id), {
+        credentials: snapshot.credentials,
+        config: snapshot.config,
+      }, true);
+      atomicWriteJson(metaPath(id), cleanMeta, false);
+      imported.push({ id, label: cleanMeta.label || cleanMeta.email || id });
+    } catch (e) {
+      skipped.push({ id: item && item.meta && item.meta.id, reason: e.message || String(e) });
+    }
+  }
+  return { imported, skipped, count: imported.length };
+}
+
 /** 当前登录态指纹（用于 status） */
 function current() {
   return extractFingerprint();
 }
 
-module.exports = { list, capture, load, use, remove, rename, current, metaPath, snapPath };
+module.exports = { list, capture, load, use, remove, rename, current, exportAccounts, importAccounts, metaPath, snapPath };

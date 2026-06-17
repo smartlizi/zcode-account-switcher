@@ -517,6 +517,29 @@ button:disabled {
   background: var(--color-foreground-faint);
 }
 
+/* Export selection */
+.export-select-bar {
+  margin: 0 24px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-foreground-dim);
+  font-size: 13px;
+  background: rgba(15, 23, 42, 0.36);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--inset-highlight);
+}
+
+.export-select-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* Account list area */
 .account-list {
   flex: 1;
@@ -595,6 +618,74 @@ button:disabled {
 .account-card.current:hover {
   border-color: rgba(34, 197, 94, 0.85);
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35), 0 0 34px rgba(34, 197, 94, 0.26), var(--inset-highlight);
+}
+
+.account-card.export-selected {
+  border-color: rgba(56, 189, 248, 0.72);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.28), 0 0 24px rgba(56, 189, 248, 0.15), var(--inset-highlight);
+}
+
+.account-card.export-selected:hover {
+  border-color: rgba(56, 189, 248, 0.9);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.34), 0 0 30px rgba(56, 189, 248, 0.22), var(--inset-highlight);
+}
+
+.account-export-check {
+  position: relative;
+  width: 24px;
+  height: 42px;
+  flex: 0 0 24px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.account-export-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.account-export-check span {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: rgba(15, 23, 42, 0.66);
+  box-shadow: var(--inset-highlight);
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.account-export-check span::after {
+  content: '';
+  display: block;
+  width: 9px;
+  height: 5px;
+  margin: 4px 0 0 4px;
+  border-left: 2px solid #052e16;
+  border-bottom: 2px solid #052e16;
+  transform: rotate(-45deg) scale(0.72);
+  opacity: 0;
+}
+
+.account-export-check input:checked + span {
+  border-color: rgba(56, 189, 248, 0.9);
+  background: linear-gradient(180deg, #67e8f9, #38bdf8);
+  box-shadow: var(--inset-highlight), 0 0 14px rgba(56, 189, 248, 0.38);
+}
+
+.account-export-check input:checked + span::after {
+  opacity: 1;
+}
+
+.account-export-check input:focus-visible + span {
+  outline: 2px solid rgba(56, 189, 248, 0.5);
+  outline-offset: 2px;
+}
+
+.account-export-check input:disabled + span {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .account-info {

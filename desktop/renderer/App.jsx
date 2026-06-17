@@ -9,6 +9,8 @@ import {
   XCircle,
   Info,
   SearchX,
+  Upload,
+  Download,
 } from 'lucide-react';
 import AccountCard from './components/AccountCard.jsx';
 import StatusBar from './components/StatusBar.jsx';
@@ -27,6 +29,8 @@ export default function App() {
   const [quota, setQuota] = useState(null);
   const [quotaLoading, setQuotaLoading] = useState(false);
   const [accountQuotas, setAccountQuotas] = useState({});
+  const accountQuotasRef = useRef(accountQuotas);
+  accountQuotasRef.current = accountQuotas;
   const [toast, setToast] = useState(null); // {type, msg}
   const [captureOpen, setCaptureOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -34,6 +38,7 @@ export default function App() {
   const [renamingId, setRenamingId] = useState(null); // 正在重命名的账号 id
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState({ health: 'all', quota: 'all' });
+  const [selectedAccountIds, setSelectedAccountIds] = useState({});
 
   const showToast = useCallback((type, msg) => setToast({ type, msg }), []);
 
@@ -111,6 +116,81 @@ export default function App() {
           : { loading: false, ok: false, error: (r && r.error) || '额度不可查' },
     }));
   }, []);
+
+  const refreshImportedQuotas = useCallback(async (ids) => {
+    const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+    for (const id of uniqueIds) await refreshOneAccountQuota(id);
+    [8000, 20000, 40000].forEach((delay) => {
+      setTimeout(() => {
+        const latest = accountsRef.current;
+        const existingIds = new Set(latest.map((acc) => acc.id));
+        uniqueIds.forEach((id) => {
+          if (!existingIds.has(id)) return;
+          const q = accountQuotasRef.current[id];
+          if (!(q?.ok && q?.data?.items?.length)) refreshOneAccountQuota(id);
+        });
+      }, delay);
+    });
+  }, [refreshOneAccountQuota]);
+
+  useEffect(() => {
+    const validIds = new Set(accounts.map((acc) => acc.id));
+    setSelectedAccountIds((prev) => {
+      let changed = false;
+      const next = {};
+      for (const id of Object.keys(prev)) {
+        if (validIds.has(id)) next[id] = true;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [accounts]);
+
+  const selectedIds = useMemo(() => Object.keys(selectedAccountIds).filter((id) => selectedAccountIds[id]), [selectedAccountIds]);
+
+  const handleExportAccounts = useCallback(async () => {
+    setBusy(true);
+    try {
+      const ids = selectedIds.length ? selectedIds : undefined;
+      const r = await window.api.exportAccounts(ids);
+      if (!r.ok) { showToast('error', r.error || '导出失败'); return; }
+      if (r.data?.canceled) return;
+      showToast('success', `已导出 ${r.data?.count || 0} 个账号，请妥善保管导出文件`);
+      if (selectedIds.length) setSelectedAccountIds({});
+    } finally {
+      setBusy(false);
+    }
+  }, [selectedIds, showToast]);
+
+  const handleImportAccounts = useCallback(async () => {
+    setBusy(true);
+    try {
+      const r = await window.api.importAccounts();
+      if (!r.ok) { showToast('error', r.error || '导入失败'); return; }
+      if (r.data?.canceled) return;
+
+      const imported = r.data?.imported || [];
+      const skipped = r.data?.skipped || [];
+      const s = await window.api.status();
+      const l = await window.api.list();
+      if (s.ok) setStatus(s.data);
+      if (l.ok) setAccounts(l.data);
+
+      const ids = imported.map((x) => x.id).filter(Boolean);
+      const fileErrors = (r.data?.files || []).filter((x) => x.error).length;
+      const fileText = r.data?.fileCount > 1 ? `，共 ${r.data.fileCount} 个文件` : '';
+      const skippedText = skipped.length ? `，跳过 ${skipped.length} 项` : '';
+      const errorText = fileErrors ? `，${fileErrors} 个文件失败` : '';
+      if (ids.length) {
+        showToast('success', `已导入 ${ids.length} 个账号${fileText}${skippedText}${errorText}，正在刷新额度`);
+        await refreshImportedQuotas(ids);
+      } else {
+        showToast(skipped.length || fileErrors ? 'info' : 'error', skipped.length || fileErrors ? `没有新账号导入${fileText}${skippedText}${errorText}` : '导入文件中没有可用账号');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshImportedQuotas, showToast]);
 
   const refreshQuota = useCallback(async () => {
     // 总额度现在是所有账号合计，刷新 = 重新拉取所有账号额度
@@ -219,6 +299,26 @@ export default function App() {
     });
   })();
 
+  const visibleIds = filteredAccounts.map((acc) => acc.id);
+  const selectedCount = selectedIds.length;
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedAccountIds[id]);
+  const toggleAccountSelected = useCallback((id, checked) => {
+    setSelectedAccountIds((prev) => {
+      const next = { ...prev };
+      if (checked) next[id] = true;
+      else delete next[id];
+      return next;
+    });
+  }, []);
+  const toggleVisibleSelected = useCallback(() => {
+    setSelectedAccountIds((prev) => {
+      const next = { ...prev };
+      if (allVisibleSelected) visibleIds.forEach((id) => delete next[id]);
+      else visibleIds.forEach((id) => { next[id] = true; });
+      return next;
+    });
+  }, [allVisibleSelected, visibleIds]);
+
   // 捕获
   const handleCapture = async (label) => {
     setBusy(true);
@@ -320,6 +420,45 @@ export default function App() {
     });
   };
 
+  const handleDeleteSelected = async () => {
+    const selectedAccounts = accounts.filter((acc) => selectedAccountIds[acc.id]);
+    if (!selectedAccounts.length) return;
+    setConfirm({
+      title: '批量删除账号快照',
+      desc: `确定删除已选的 ${selectedAccounts.length} 个账号？这些账号的登录态快照将被清除（不影响 ZCode 当前登录态）。`,
+      danger: true,
+      confirmText: `删除 ${selectedAccounts.length} 个账号`,
+      detail: (
+        <div className="confirm-notes">
+          {selectedAccounts.slice(0, 8).map((acc) => (
+            <div key={acc.id}>将删除：<strong>{acc.email || acc.label || acc.id}</strong></div>
+          ))}
+          {selectedAccounts.length > 8 && <div>另有 {selectedAccounts.length - 8} 个账号…</div>}
+        </div>
+      ),
+      onOk: async () => {
+        setConfirm(null);
+        setBusy(true);
+        let removed = 0;
+        let failed = 0;
+        for (const acc of selectedAccounts) {
+          const r = await window.api.remove(acc.id);
+          if (r.ok && r.data.removed) removed++;
+          else failed++;
+        }
+        setBusy(false);
+        setSelectedAccountIds({});
+        await refreshListOnly();
+        setAccountQuotas((prev) => {
+          const next = { ...prev };
+          selectedAccounts.forEach((acc) => delete next[acc.id]);
+          return next;
+        });
+        showToast(failed ? 'info' : 'success', failed ? `已删除 ${removed} 个账号，${failed} 个删除失败` : `已删除 ${removed} 个账号`);
+      },
+    });
+  };
+
   // 重命名（inline 编辑）
   const handleRename = async (acc, newLabel) => {
     setRenamingId(null);
@@ -376,6 +515,24 @@ export default function App() {
           </button>
           <button
             className="btn"
+            onClick={handleImportAccounts}
+            disabled={busy}
+            title="从导出的账号快照文件导入"
+          >
+            <Upload size={16} />
+            导入账号
+          </button>
+          <button
+            className="btn"
+            onClick={handleExportAccounts}
+            disabled={busy || accounts.length === 0}
+            title={selectedCount ? `导出已勾选的 ${selectedCount} 个账号` : '未勾选时导出全部账号，导出的文件包含账号登录态，请妥善保管'}
+          >
+            <Download size={16} />
+            {selectedCount ? `导出已选 ${selectedCount}` : '导出账号'}
+          </button>
+          <button
+            className="btn"
             onClick={() => setCaptureOpen(true)}
             disabled={busy}
           >
@@ -408,6 +565,24 @@ export default function App() {
         />
       )}
 
+      {/* 导出选择条 */}
+      {!loading && accounts.length > 0 && (
+        <div className="export-select-bar">
+          <span>{selectedCount ? `已选择 ${selectedCount} 个账号用于导出` : '勾选账号后可只导出所选；不勾选则导出全部'}</span>
+          <div className="export-select-actions">
+            <button className="btn btn-ghost btn-sm" onClick={toggleVisibleSelected} disabled={busy || visibleIds.length === 0}>
+              {allVisibleSelected ? '取消全选当前结果' : '全选当前结果'}
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSelectedAccountIds({})} disabled={busy || selectedCount === 0}>
+              清空选择
+            </button>
+            <button className="btn btn-danger btn-sm" onClick={handleDeleteSelected} disabled={busy || selectedCount === 0}>
+              删除已选
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 账号列表 */}
       <main className="account-list">
         {loading ? (
@@ -426,6 +601,10 @@ export default function App() {
               <button className="btn btn-primary empty-action" onClick={() => setAddOpen(true)} disabled={busy}>
                 <Plus size={16} />
                 添加账号
+              </button>
+              <button className="btn empty-action" onClick={handleImportAccounts} disabled={busy}>
+                <Upload size={16} />
+                导入账号
               </button>
               <button className="btn empty-action" onClick={() => setCaptureOpen(true)} disabled={busy}>
                 捕获当前账号
@@ -452,6 +631,8 @@ export default function App() {
               isCurrent={acc.id === currentAccountId}
               busy={busy}
               renaming={renamingId === acc.id}
+              selected={!!selectedAccountIds[acc.id]}
+              onSelectedChange={(checked) => toggleAccountSelected(acc.id, checked)}
               onUse={() => handleUse(acc)}
               onDelete={() => handleDelete(acc)}
               onRenameStart={() => setRenamingId(acc.id)}
@@ -503,21 +684,27 @@ export default function App() {
             const l = await window.api.list();
             if (s.ok) setStatus(s.data);
             if (l.ok) setAccounts(l.data);
-            // 自动刷新新增账号的额度（精准刷新，不影响其它账号）
-            if (newAccountId) {
+
+            const accountsAfterAdd = l.ok && Array.isArray(l.data) ? l.data : [];
+            const exists = accountsAfterAdd.some((acc) => acc.id === newAccountId);
+            const latest = accountsAfterAdd[accountsAfterAdd.length - 1];
+            const targetId = exists ? newAccountId : latest?.id;
+
+            // 自动刷新新增账号的额度（用列表中真实存在的 id，避免异步事件里的旧 id 造成快照找不到）
+            if (targetId) {
               // 先置 loading 态，避免卡片短暂显示"额度不可查"
               setAccountQuotas((prev) => ({
                 ...prev,
-                [newAccountId]: { loading: true, ok: false, error: null },
+                [targetId]: { loading: true, ok: false, error: null },
               }));
-              await refreshOneAccountQuota(newAccountId);
+              await refreshOneAccountQuota(targetId);
               // 新账号服务端 billing 可能未即时就绪（部分模型额度延迟初始化）：
               // 渐进式自动重试 3 次（8s / 20s / 40s），覆盖服务端初始化窗口
               [8000, 20000, 40000].forEach((delay) => {
                 setTimeout(() => {
                   setAccountQuotas((prev) => {
-                    if (prev[newAccountId]?.ok && prev[newAccountId]?.data?.items?.length) return prev; // 已有数据就不重试
-                    refreshOneAccountQuota(newAccountId);
+                    if (prev[targetId]?.ok && prev[targetId]?.data?.items?.length) return prev; // 已有数据就不重试
+                    refreshOneAccountQuota(targetId);
                     return prev;
                   });
                 }, delay);

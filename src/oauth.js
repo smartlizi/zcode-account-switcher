@@ -2,12 +2,13 @@
 /**
  * ZCode OAuth 凭据写盘 + 账号快照
  *
- * 流程（方案 A：内嵌浏览器自动换 token）：
- *   1. oauthBrowser.exchangeToken() 在已登录会话里自动拿到 {token, zaiAccessToken, refreshToken, user}
+ * 流程（CLI OAuth + 系统浏览器）：
+ *   1. oauthCli.ZaiAuthFlow.poll() 在用户登录后拿到 {token, zaiAccessToken, refreshToken, user}
+ *      （token 是 CLI OAuth 返回的 zcode JWT，自带 billing 查询权限）
  *   2. finishLogin(tokenSet) → writeOAuthCredentials 加密写盘
  *   3. manager.capture() 做账号快照
  *
- * 本模块不再负责登录 URL 生成 / 回调解析 / 网络换 token（那些已交给 oauthBrowser）。
+ * 本模块不负责登录 URL 生成 / 网络换 token（那些在 oauthCli.js）。
  * 这里只保留：把换好的 token 集合安全地写入 ZCode 登录态文件 + 工具函数。
  */
 const fs = require('fs');

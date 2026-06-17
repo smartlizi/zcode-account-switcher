@@ -69,6 +69,8 @@ export default function AccountCard({
   isCurrent,
   busy,
   renaming,
+  selected,
+  onSelectedChange,
   onUse,
   onDelete,
   onRenameStart,
@@ -95,7 +97,17 @@ export default function AccountCard({
   };
 
   return (
-    <div className={`account-card ${isCurrent ? 'current' : ''}`}>
+    <div className={`account-card ${isCurrent ? 'current' : ''} ${selected ? 'export-selected' : ''}`}>
+      <label className="account-export-check" title="勾选后导出此账号">
+        <input
+          type="checkbox"
+          checked={!!selected}
+          onChange={(e) => onSelectedChange?.(e.target.checked)}
+          disabled={busy}
+          aria-label={'选择导出 ' + account.label}
+        />
+        <span />
+      </label>
       <div className="account-avatar">
         {account.avatar ? <img src={account.avatar} alt="" /> : <span>{(account.email || account.label || '?').slice(0, 1).toUpperCase()}</span>}
       </div>
@@ -162,7 +174,7 @@ export default function AccountCard({
           <span className="account-quota-state">刷新中…</span>
         ) : quota?.ok && quota.data ? (
           quota.data.isEmpty || !quota.data.items || quota.data.items.length === 0 ? (
-            <span className="account-quota-state hint">新账号需登录客户端激活额度</span>
+            <span className="account-quota-state hint">暂无模型额度数据</span>
           ) : (
             <div className="quota-items">
               {quota.data.items.map((item, idx) => {
@@ -191,8 +203,10 @@ export default function AccountCard({
               })}
             </div>
           )
+        ) : quota && quota.ok === false ? (
+          <span className="account-quota-state hint" title={quota.error || '额度获取失败'}>{quota.error || '额度获取失败'}</span>
         ) : (
-          <span className="account-quota-state hint">新账号需登录客户端激活额度</span>
+          <span className="account-quota-state hint">点击刷新获取额度</span>
         )}
       </div>
 

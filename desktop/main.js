@@ -25,12 +25,19 @@ process.on('unhandledRejection', (e) => logErr('unhandledRejection', e));
 
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 
-// 复用上一层目录 src/ 里已验证的后端逻辑
-const manager = require('../src/manager');
-const switcher = require('../src/switcher');
-const oauth = require('../src/oauth');
-const quota = require('../src/quota');
-const { ZaiAuthFlow } = require('../src/oauthCli');
+// 路径适配：开发时 src 在上级目录 ../src，打包后 electron-builder
+// 把 src/ 以 extraResources 形式放到 process.resourcesPath/app-src/
+const isPacked = app.isPackaged;
+const SRC_DIR = isPacked
+  ? path.join(process.resourcesPath, 'app-src')
+  : path.join(__dirname, '..', 'src');
+
+// 复用 src/ 里已验证的后端逻辑（开发/打包双模式兼容）
+const manager = require(path.join(SRC_DIR, 'manager'));
+const switcher = require(path.join(SRC_DIR, 'switcher'));
+const oauth = require(path.join(SRC_DIR, 'oauth'));
+const quota = require(path.join(SRC_DIR, 'quota'));
+const { ZaiAuthFlow } = require(path.join(SRC_DIR, 'oauthCli'));
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL; // 开发模式由 vite 提供
 let mainWindow = null;
@@ -276,13 +283,15 @@ ipcMain.handle('account:oauth-start', async (_evt, opts) => {
           };
 
           try {
-            sendFlowEvent({ type: 'exchanging', message: '登录成功，正在保存账号…' });
-            const result = oauth.finishLogin({ tokenSet, label, note: note || '', overwrite: true });
+            sendFlowEvent({ type: 'exchanging', message: '登录成功，正在保存账号并初始化额度…' });
+            const result = await oauth.finishLogin({ tokenSet, label, note: note || '', overwrite: true });
+            logInfo('[oauth-start] finishLogin done, billingReady=' + result.billingReady);
             sendFlowEvent({
               type: 'saved',
               account: result.account,
               email: (result.userInfo && result.userInfo.email) || '',
               skipped: result.skipped,
+              billingReady: result.billingReady,
             });
           } catch (e) {
             sendFlowEvent({ type: 'error', message: '保存账号失败：' + (e.message || e) });

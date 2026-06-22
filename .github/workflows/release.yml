@@ -48,12 +48,10 @@ jobs:
       # ── 5. 构建渲染层 + 用 electron-builder 打包安装包 ──────────
       - name: 构建并打包
         working-directory: desktop
-        run: npm run dist
+        run: npm run dist -- --publish never
         env:
           # macOS 不签名时跳过公证（避免报错）
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          # electron-builder 用 GH_TOKEN 上传 Release 附件
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ── 6. 上传安装包到 GitHub Release ──────────────────────────
       #    softprops/action-gh-release 会自动用 tag 名创建/更新 Release

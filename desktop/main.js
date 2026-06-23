@@ -75,7 +75,7 @@ function createWindow() {
     height: 840,
     minWidth: 1080,
     minHeight: 680,
-    title: 'ZCode 账号切换器',
+    title: 'ZCode Account Switcher',
     backgroundColor: '#0b1220',
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'assets', 'icon.png'),

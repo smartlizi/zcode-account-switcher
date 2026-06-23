@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserPlus, Loader2 } from 'lucide-react';
+import { useLanguage } from '../LanguageContext.jsx';
 
-/**
- * 捕获新账号弹窗
- */
 export default function CaptureModal({ onClose, onConfirm, busy, defaultName }) {
+  const { t } = useLanguage();
   const [name, setName] = useState(defaultName || '');
   const inputRef = useRef(null);
 
@@ -25,15 +24,15 @@ export default function CaptureModal({ onClose, onConfirm, busy, defaultName }) 
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>
           <UserPlus size={18} />
-          捕获当前账号
+          {t('capture.title')}
         </h2>
         <p>
-          把 ZCode 当前登录的账号存为一个快照，之后可一键切换回来，无需重新登录。
+          {t('capture.desc')}
         </p>
         <input
           ref={inputRef}
           className="modal-input"
-          placeholder="给这个账号起个名字（如：主账号）"
+          placeholder={t('capture.placeholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={handleKey}
@@ -41,11 +40,11 @@ export default function CaptureModal({ onClose, onConfirm, busy, defaultName }) 
         />
         <div className="modal-actions">
           <button className="btn" onClick={onClose} disabled={busy}>
-            取消
+            {t('capture.cancel')}
           </button>
           <button className="btn btn-primary" onClick={submit} disabled={busy}>
             {busy ? <Loader2 size={15} className="spin" /> : <UserPlus size={15} />}
-            捕获
+            {t('capture.confirm')}
           </button>
         </div>
       </div>

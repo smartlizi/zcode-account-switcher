@@ -98,6 +98,38 @@ function zcas { node "<项目路径>\zcode-account-switcher\src\cli.js" @args }
 
 ---
 
+## 🌐 多语言支持 (Bilingual Support)
+
+ZCode Account Switcher 内置 **中文** 和 **English** 两种语言，可随时切换。
+The app comes with built-in **Chinese** and **English** language support — switch at any time.
+
+### 桌面版 (Desktop App)
+点击顶栏的 🌐 图标即可在中文和英文之间切换，界面文字、按钮、提示信息会立即更新。
+Click the 🌐 icon in the top toolbar to toggle between Chinese and English. All UI text, buttons, and tooltips update instantly.
+
+### CLI 版 (Command Line)
+在命令末尾加 `--lang en` 即可输出英文，加 `--lang zh` 切换回中文。默认自动检测系统语言。
+Append `--lang en` to any command for English output, or `--lang zh` for Chinese. Auto-detects from system locale.
+
+```cmd
+:: English output
+node src/cli.js status --lang en
+node src/cli.js quota --lang en
+
+:: Chinese output (default)
+node src/cli.js status --lang zh
+```
+
+也可以用环境变量 `LANG=en` 全局设置：
+Or set the `LANG=en` environment variable globally:
+
+```cmd
+set LANG=en
+node src/cli.js status
+```
+
+---
+
 ## 使用流程
 
 ### 第一次：为每个账号各做一次 capture

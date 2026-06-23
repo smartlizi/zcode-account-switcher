@@ -1,12 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { useLanguage } from '../LanguageContext.jsx';
 
-/**
- * 通用二次确认弹窗
- * - Esc 取消，Enter（非危险操作时）确认
- * - 打开时聚焦「取消」避免误触；危险操作聚焦「取消」更安全
- */
 export default function ConfirmDialog({ title, desc, detail, danger, confirmText, cancelText, onCancel, onOk, wide }) {
+  const { t } = useLanguage();
   const cancelRef = useRef(null);
 
   useEffect(() => {
@@ -29,7 +26,7 @@ export default function ConfirmDialog({ title, desc, detail, danger, confirmText
         {detail ? <div className="confirm-detail">{detail}</div> : null}
         <div className="modal-actions">
           <button className="btn" ref={cancelRef} onClick={onCancel}>
-            {cancelText || '取消'}
+            {cancelText || t('confirm.cancel')}
           </button>
           <button
             className={danger ? 'btn' : 'btn btn-primary'}
@@ -40,7 +37,7 @@ export default function ConfirmDialog({ title, desc, detail, danger, confirmText
                 : undefined
             }
           >
-            {confirmText || '确定'}
+            {confirmText || t('confirm.confirm')}
           </button>
         </div>
       </div>

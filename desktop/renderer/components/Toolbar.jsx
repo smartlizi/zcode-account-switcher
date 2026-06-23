@@ -1,18 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Search, X } from 'lucide-react';
+import { useLanguage } from '../LanguageContext.jsx';
 
-/**
- * 账号列表上方工具栏：搜索 + 多组筛选 + 结果计数
- *
- * props:
- *   search         string          当前搜索词
- *   onSearch       (v)=>void
- *   filters        {scope, health, quota}   各为 'all' | ...
- *   onFilter       (key, value)=>void
- *   total          number          未过滤前的账号总数
- *   shown          number          过滤后显示的账号数
- *   onClearFilters ()=>void        清空搜索 + 所有筛选
- */
 export default function Toolbar({
   search,
   onSearch,
@@ -22,9 +11,9 @@ export default function Toolbar({
   shown,
   onClearFilters,
 }) {
+  const { t } = useLanguage();
   const inputRef = useRef(null);
 
-  // 输入框聚焦时按 / 可快速定位（可选的小快捷键）
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === '/' && document.activeElement !== inputRef.current) {
@@ -45,7 +34,7 @@ export default function Toolbar({
     (filters.quota && filters.quota !== 'all');
 
   return (
-    <section className="toolbar" aria-label="搜索与筛选">
+    <section className="toolbar" aria-label="Search & filter">
       <div className="toolbar-top">
         <div className="search-box">
           <Search size={15} className="search-icon" />
@@ -53,53 +42,55 @@ export default function Toolbar({
             ref={inputRef}
             type="text"
             className="search-input"
-            placeholder="搜索名称 / 邮箱 / 提供方"
+            placeholder={t('toolbar.search.placeholder')}
             value={search}
             onChange={(e) => onSearch(e.target.value)}
-            aria-label="搜索账号"
+            aria-label={t('toolbar.search.aria')}
           />
           {search ? (
             <button
               className="search-clear"
               onClick={() => onSearch('')}
-              title="清空搜索"
-              aria-label="清空搜索"
+              title={t('toolbar.search.clear')}
+              aria-label={t('toolbar.search.clear')}
             >
               <X size={14} />
             </button>
           ) : null}
         </div>
         <div className="results-count" aria-live="polite">
-          {hasFilters ? `匹配 ${shown} / ${total} 个账号` : `共 ${total} 个账号`}
+          {hasFilters
+            ? t('toolbar.search.result', { shown, total })
+            : t('toolbar.search.total', { total })}
         </div>
       </div>
 
       <div className="toolbar-filters">
         <FilterGroup
-          label="健康"
+          label={t('toolbar.filter.health')}
           value={filters.health || 'all'}
           onChange={(v) => onFilter('health', v)}
           options={[
-            { value: 'all', label: '全部' },
-            { value: 'healthy', label: '健康' },
-            { value: 'warning', label: '注意' },
-            { value: 'error', label: '异常' },
+            { value: 'all', label: t('toolbar.filter.all') },
+            { value: 'healthy', label: t('toolbar.filter.healthy') },
+            { value: 'warning', label: t('toolbar.filter.warning') },
+            { value: 'error', label: t('toolbar.filter.error') },
           ]}
         />
         <FilterGroup
-          label="额度"
+          label={t('toolbar.filter.quota')}
           value={filters.quota || 'all'}
           onChange={(v) => onFilter('quota', v)}
           options={[
-            { value: 'all', label: '全部' },
-            { value: 'available', label: '可查' },
-            { value: 'unavailable', label: '不可查' },
+            { value: 'all', label: t('toolbar.filter.all') },
+            { value: 'available', label: t('toolbar.filter.available') },
+            { value: 'unavailable', label: t('toolbar.filter.unavailable') },
           ]}
         />
         {hasFilters ? (
-          <button className="filter-clear" onClick={onClearFilters} aria-label="清空搜索与筛选条件">
+          <button className="filter-clear" onClick={onClearFilters} aria-label={t('toolbar.filter.clear')}>
             <X size={13} />
-            清空筛选
+            {t('toolbar.filter.clear')}
           </button>
         ) : null}
       </div>

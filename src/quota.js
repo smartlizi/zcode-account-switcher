@@ -36,6 +36,7 @@ async function queryQuotaByToken(token) {
 
 async function queryQuotaByTokens(tokens) {
   let lastError = null;
+  let authFailCount = 0;
   for (const token of tokens) {
     try {
       const current = await fetchBilling(buildBillingUrl(BILLING_CURRENT_URL), token);
@@ -49,8 +50,32 @@ async function queryQuotaByTokens(tokens) {
       };
     } catch (e) {
       lastError = e;
+      // 401/403 计数：若所有候选 token 都鉴权失败，说明 token 整体过期，提示重新登录
+      if (e && /HTTP 40[13]/.test(e.message)) authFailCount++;
       // 401/403 说明该 token 不适用，继续试下一个候选 token（不再 break）
     }
+  }
+
+  // 所有 token 都 401/403：可能是服务端首次激活延迟（token 已写入但服务端缓存未刷新），
+  // 等 1.5s 后用第一个候选 token 重试一次，避免误报"过期"。
+  // 手动刷新能成功就是这个原因——首次查询失败后过几秒再查就成功了。
+  if (authFailCount > 0 && authFailCount === tokens.length && tokens.length > 0) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const token = tokens[0];
+      const current = await fetchBilling(buildBillingUrl(BILLING_CURRENT_URL), token);
+      const balance = await fetchBilling(BILLING_BALANCE_URL, token);
+      const overview = normalizeQuota(current.data, balance.data);
+      return {
+        ...overview,
+        refreshedAt: Date.now(),
+        raw: { current: current.data, balance: balance.data },
+      };
+    } catch (e) {
+      lastError = e;
+    }
+    // 重试仍失败 → token 真的过期，给出明确指引
+    throw new Error('该账号 Token 已过期，请删除后重新登录');
   }
   throw lastError || new Error('额度查询失败');
 }
@@ -64,21 +89,38 @@ function getAccountQuota(id) {
 }
 
 async function fetchBilling(url, token) {
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      accept: 'application/json, text/plain, */*',
-      authorization: 'Bearer ' + token,
-    },
-  });
-  const text = await response.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
-  if (!response.ok) {
+  // 429 退避重试：多个账号首次启动时并发查询，服务端可能限流。
+  // 渐进退避 500ms / 1.5s / 4s，避免一次性失败导致额度卡片显示错误。
+  const retryDelays = [500, 1500, 4000];
+  let lastError = null;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        authorization: 'Bearer ' + token,
+      },
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+    if (response.ok) return { status: response.status, data };
+
+    // 429 限流：退避后重试（最后一次 429 也退避，让后续 token 在 queryQuotaByTokens 里继续）
+    if (response.status === 429 && attempt < retryDelays.length) {
+      lastError = new Error('服务端限流，正在重试...');
+      await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+      continue;
+    }
+
+    // 401/403 说明 token 无效或过期，转成友好提示（JWT 有有效期，过期是正常现象）
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Token 已过期或无效（HTTP ' + response.status + '）');
+    }
     const msg = typeof data === 'object' && data ? (data.message || data.msg || data.error) : text;
     throw new Error(`额度接口 HTTP ${response.status}: ${msg || response.statusText}`);
   }
-  return { status: response.status, data };
+  throw lastError || new Error('额度查询失败');
 }
 
 function readBestToken() {

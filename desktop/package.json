@@ -32,6 +32,12 @@
       "output": "release",
       "buildResources": "assets"
     },
+    "protocols": [
+      {
+        "name": "ZCode Auth Callback",
+        "schemes": ["zcode"]
+      }
+    ],
     "files": [
       "main.js",
       "preload.js",

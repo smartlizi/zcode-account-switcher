@@ -120,7 +120,7 @@ export default function App() {
   const refreshImportedQuotas = useCallback(async (ids) => {
     const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
     for (const id of uniqueIds) await refreshOneAccountQuota(id);
-    [8000, 20000, 40000].forEach((delay) => {
+    [8000, 20000, 40000, 120000].forEach((delay) => {
       setTimeout(() => {
         const latest = accountsRef.current;
         const existingIds = new Set(latest.map((acc) => acc.id));
@@ -699,8 +699,8 @@ export default function App() {
               }));
               await refreshOneAccountQuota(targetId);
               // 新账号服务端 billing 可能未即时就绪（部分模型额度延迟初始化）：
-              // 渐进式自动重试 3 次（8s / 20s / 40s），覆盖服务端初始化窗口
-              [8000, 20000, 40000].forEach((delay) => {
+              // 渐进式自动重试，覆盖服务端异步初始化窗口（最长 ~5 分钟）
+              [8000, 20000, 40000, 120000, 300000].forEach((delay) => {
                 setTimeout(() => {
                   setAccountQuotas((prev) => {
                     if (prev[targetId]?.ok && prev[targetId]?.data?.items?.length) return prev; // 已有数据就不重试

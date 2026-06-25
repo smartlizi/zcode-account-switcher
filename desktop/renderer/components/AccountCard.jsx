@@ -174,7 +174,7 @@ export default function AccountCard({
           <span className="account-quota-state">刷新中…</span>
         ) : quota?.ok && quota.data ? (
           quota.data.isEmpty || !quota.data.items || quota.data.items.length === 0 ? (
-            <span className="account-quota-state hint">暂无模型额度数据</span>
+            <span className="account-quota-state hint">额度初始化中…点击刷新检查</span>
           ) : (
             <div className="quota-items">
               {quota.data.items.map((item, idx) => {

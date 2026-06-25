@@ -23,21 +23,26 @@ function logErr(stage, e) {
 process.on('uncaughtException', (e) => logErr('uncaughtException', e));
 process.on('unhandledRejection', (e) => logErr('unhandledRejection', e));
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, protocol } = require('electron');
+const crypto = require('crypto');
 
 // 路径适配：开发时 src 在上级目录 ../src，打包后 electron-builder
 // 把 src/ 以 extraResources 形式放到 process.resourcesPath/app-src/
-const isPacked = app.isPackaged;
-const SRC_DIR = isPacked
-  ? path.join(process.resourcesPath, 'app-src')
-  : path.join(__dirname, '..', 'src');
+// 注意：不能用 app.isPackaged 判断 —— 它在部分环境（如本机当前）会误判为 true，
+// 导致开发态走打包分支、require 找不到模块。改用文件系统事实判断更可靠：
+// 开发态 ../src/manager.js 存在；打包后 files 不含 src/，故该路径不存在。
+const DEV_SRC = path.join(__dirname, '..', 'src');
+const PACKED_SRC = path.join(process.resourcesPath, 'app-src');
+const SRC_DIR = fs.existsSync(path.join(DEV_SRC, 'manager.js'))
+  ? DEV_SRC
+  : PACKED_SRC;
 
 // 复用 src/ 里已验证的后端逻辑（开发/打包双模式兼容）
 const manager = require(path.join(SRC_DIR, 'manager'));
 const switcher = require(path.join(SRC_DIR, 'switcher'));
 const oauth = require(path.join(SRC_DIR, 'oauth'));
 const quota = require(path.join(SRC_DIR, 'quota'));
-const { ZaiAuthFlow } = require(path.join(SRC_DIR, 'oauthCli'));
+const oauthCli = require(path.join(SRC_DIR, 'oauthCli'));
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL; // 开发模式由 vite 提供
 let mainWindow = null;
@@ -131,12 +136,14 @@ const wrap = async (fn, channel) => {
 // 把 OAuth 安装/操作进度推给渲染进程（用于 AddAccountModal 实时显示）
 // 把添加账号的流程事件推给渲染进程
 function sendFlowEvent(event) {
-  logInfo('[oauth-flow] ' + event.type + (event.message ? ': ' + event.message : ''));
+  logInfo('[oauth-flow] ' + event.type + (event.message ? ': ' + event.message : '') + ', mainWindow=' + (mainWindow ? (mainWindow.isDestroyed() ? 'destroyed' : 'alive') : 'null'));
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('oauth:flow-event', event);
     }
-  } catch (_) {}
+  } catch (e) {
+    logInfo('[oauth-flow] send error: ' + (e && e.message));
+  }
 }
 
 ipcMain.handle('account:status', async () =>
@@ -224,99 +231,111 @@ ipcMain.handle('account:import', async () =>
   }, 'import')
 );
 
-// ===== OAuth 添加账号（CLI OAuth + 系统浏览器）=====
-// 流程：init 拿授权链接 → openExternal 打开系统浏览器 → 后台 poll 轮询登录
-//   → 检测到 ready → finishLogin 写盘 + 快照。
+// ===== OAuth 添加账号（Authorization Code + 系统浏览器 + zcode:// 协议回调）=====
+// 流程：buildAuthorizeUrl → openExternal 开系统浏览器 → 用户登录 →
+//   浏览器跳 zcode://zai-auth/callback?code=&state= → protocol.handle 捕获 →
+//   exchangeCode 换 token → finishLogin 写盘 + 快照。
 // 前端调一次 oauth-start，全程通过 oauth:flow-event 事件接收阶段进度。
+//
+// 与官方 ZCode 客户端走完全相同的 OAuth 配置（端点 / appId / 回调 URI），
+// 替换了已被官方废弃的 device flow（/oauth/cli/init 返回 404）。
 
-// 进行中的登录流程 + 轮询定时器（模块级，跨请求保留）
-let _loginFlow = null;   // { flow: ZaiAuthFlow, flowId: string }
-let _pollTimer = null;   // setInterval handle
+// 进行中的登录会话（模块级，跨请求 + 跨进程保留）
+let _oauthState = null;     // 本地生成的 state，回调时校验防 CSRF / 串扰
+let _oauthResolve = null;   // 登录 promise 的 resolve（{ code } 或 { error }）
+let _oauthTimer = null;     // 超时计时器（10 分钟）
 
-function stopOauthPolling() {
-  if (_pollTimer) {
-    clearInterval(_pollTimer);
-    _pollTimer = null;
+// 清理「等回调」状态（清 timer + 置空 resolver），不主动 reject
+function stopOauthWait() {
+  if (_oauthTimer) { clearTimeout(_oauthTimer); _oauthTimer = null; }
+  _oauthResolve = null;
+}
+
+/**
+ * 处理 zcode:// 协议回调 URL。
+ * 校验 state（防 CSRF / 重放 / 跨会话串扰），通过则 resolve 登录 promise。
+ * 解析失败或 state 不符静默忽略（浏览器可能重复触发、或残留旧链接）。
+ */
+function handleOAuthCallback(rawUrl) {
+  logInfo('[oauth-callback] received: ' + (rawUrl || '').slice(0, 200));
+  if (!rawUrl || typeof rawUrl !== 'string') return;
+  let url;
+  try { url = new URL(rawUrl); } catch (_) { return; }
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  logInfo('[oauth-callback] code=' + (code ? 'present' : 'absent') + ', state=' + (state || 'absent') + ', expectedState=' + (_oauthState || 'none'));
+  if (!code) return;                       // 无授权码，忽略
+  if (_oauthState && state && state !== _oauthState) {
+    logInfo('[oauth-callback] state mismatch, ignored');
+    return;                                // 非本次会话的回调，丢弃
+  }
+  const resolve = _oauthResolve;
+  if (resolve) {
+    stopOauthWait();
+    resolve({ code });
   }
 }
 
 ipcMain.handle('account:oauth-start', async (_evt, opts) => {
   const { label, note } = opts || {};
   try {
-    // 1. 发起 OAuth 流程，拿授权链接
-    const flow = new ZaiAuthFlow();
-    const { flowId, authorizeUrl } = await flow.init();
-    _loginFlow = { flow, flowId };
+    stopOauthWait();
 
-    // 2. 打开系统浏览器（用户在自带浏览器里登录，风控更友好）
+    // 1. 生成 state（CSRF 防护），拼授权 URL（与官方客户端同款配置）
+    _oauthState = crypto.randomBytes(16).toString('hex');
+    const authorizeUrl = oauthCli.buildAuthorizeUrl(_oauthState);
+
+    // 2. 准备「等回调」promise：协议回调到达时 resolve，超时自动失败
+    const loginPromise = new Promise((resolve) => {
+      _oauthResolve = resolve;
+      _oauthTimer = setTimeout(() => resolve({ error: 'timeout' }), 10 * 60 * 1000);
+    });
+
+    // 3. 开系统浏览器登录页 → 等用户登录完成
     sendFlowEvent({ type: 'browser-open', message: '正在打开系统浏览器，请在浏览器中登录 Z.ai 账号' });
     await shell.openExternal(authorizeUrl);
-    sendFlowEvent({ type: 'waiting-login', message: '请在浏览器窗口中登录（支持账号密码 / 手机号）' });
+    sendFlowEvent({ type: 'waiting-login', message: '请在浏览器窗口中登录（登录后自动完成，无需任何操作）' });
 
-    // 3. 后台轮询登录完成（每 2s，与参考项目一致）
-    stopOauthPolling();
-    _pollTimer = setInterval(async () => {
-      const current = _loginFlow;
-      if (!current) return;
-      try {
-        const data = await current.flow.poll(current.flowId);
+    const result = await loginPromise;
+    if (result.error) {
+      _oauthState = null;
+      throw new Error(result.error === 'timeout' ? '登录超时（10 分钟），请重试' : result.error);
+    }
 
-        if (data.status === 'failed') {
-          stopOauthPolling();
-          _loginFlow = null;
-          sendFlowEvent({ type: 'error', message: '登录失败或已取消' });
-          return;
-        }
-
-        if (data.status === 'ready') {
-          stopOauthPolling();
-          _loginFlow = null;
-
-          // 构造 oauth.finishLogin() 所需的 tokenSet 结构：
-          //   { token, zaiAccessToken, refreshToken, user }
-          // CLI OAuth 的 poll 返回正好对齐，写盘逻辑可原样复用。
-          const tokenSet = {
-            token: data.token,
-            zaiAccessToken: (data.zai && data.zai.access_token) || undefined,
-            refreshToken: (data.zai && data.zai.refresh_token) || undefined,
-            user: data.user || {},
-          };
-
-          try {
-            sendFlowEvent({ type: 'exchanging', message: '登录成功，正在保存账号并初始化额度…' });
-            const result = await oauth.finishLogin({ tokenSet, label, note: note || '', overwrite: true });
-            logInfo('[oauth-start] finishLogin done, billingReady=' + result.billingReady);
-            sendFlowEvent({
-              type: 'saved',
-              account: result.account,
-              email: (result.userInfo && result.userInfo.email) || '',
-              skipped: result.skipped,
-              billingReady: result.billingReady,
-            });
-          } catch (e) {
-            sendFlowEvent({ type: 'error', message: '保存账号失败：' + (e.message || e) });
-          }
-        }
-        // 其它状态（pending）继续轮询
-      } catch (e) {
-        // 单次轮询网络抖动不打断流程，下次重试
-        logInfo('[oauth-start] poll error: ' + (e && e.message));
-      }
-    }, 2000);
-
-    return { ok: true, authorizeUrl };
+    // 4. 授权码换 token，写盘 + 初始化额度（tokenSet 与 finishLogin 期望同构）
+    //    state 必须传给 token 端点（服务端校验须与 authorize 时一致，否则 parameter error）
+    //    注意：要在 exchangeCode 用完 _oauthState 后才清空
+    sendFlowEvent({ type: 'exchanging', message: '登录成功，正在保存账号并初始化额度…' });
+    const tokenSet = await oauthCli.exchangeCode(result.code, _oauthState);
+    _oauthState = null;
+    const r = await oauth.finishLogin({ tokenSet, label, note: note || '', overwrite: true });
+    logInfo('[oauth-start] finishLogin done, billingReady=' + r.billingReady);
+    sendFlowEvent({
+      type: 'saved',
+      account: r.account,
+      email: (r.userInfo && r.userInfo.email) || '',
+      skipped: r.skipped,
+      billingReady: r.billingReady,
+    });
+    return { ok: true };
   } catch (e) {
     logInfo('[oauth-start] error: ' + (e && e.message));
-    sendFlowEvent({ type: 'error', message: '启动登录失败：' + (e.message || e) });
+    sendFlowEvent({ type: 'error', message: '登录失败：' + (e.message || e) });
+    stopOauthWait();
+    _oauthState = null;
     return { ok: false, error: e.message || String(e) };
   }
 });
 
-// 取消登录流程（停轮询；系统浏览器由用户自行关闭）
+// 取消登录流程：通知等待中的 promise 失败（系统浏览器由用户自行关闭）
 ipcMain.handle('account:oauth-cancel', async () =>
   wrap(() => {
-    stopOauthPolling();
-    _loginFlow = null;
+    if (_oauthResolve) {
+      const resolve = _oauthResolve;
+      stopOauthWait();
+      resolve({ error: 'cancelled' });
+    }
+    _oauthState = null;
     return { stopped: true };
   }, 'oauth-cancel')
 );
@@ -352,21 +371,93 @@ ipcMain.handle('account:rollback', async () =>
   wrap(() => switcher.rollback({ restart: true, force: true }), 'rollback')
 );
 
+// ===== 单实例锁 + 协议回调跨进程转发 =====
+// OAuth 回调通过 zcode:// 协议唤起程序，若用户已有实例运行则会触发 second-instance。
+// 把回调 URL 转发给首个实例处理（谁运行谁接，浏览器一次回调只唤起一个程序）。
+//
+// requestSingleInstanceLock 返回 false 的两种情况：
+//   1. 真实环境被协议唤起的第二实例：argv 含 zcode://，应直接 quit（OS 已转发给首个实例）
+//   2. 沙箱环境主实例：lockfile 写不进，argv 不含 zcode:// → 降级运行（无单实例保护）
+let _singleInstanceLockAcquired = false;
+try {
+  _singleInstanceLockAcquired = app.requestSingleInstanceLock();
+  logInfo('[single-instance] requestLock returned=' + _singleInstanceLockAcquired + ', argv=' + JSON.stringify(process.argv));
+} catch (e) {
+  logInfo('[single-instance] requestLock threw: ' + (e && e.message));
+}
+if (_singleInstanceLockAcquired) {
+  app.on('second-instance', (_e, argv) => {
+    logInfo('[second-instance] argv: ' + JSON.stringify(argv));
+    const url = argv.find((a) => typeof a === 'string' && a.startsWith('zcode://'));
+    if (url) handleOAuthCallback(url);
+    else logInfo('[second-instance] no zcode:// url in argv');
+    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+  });
+} else {
+  // 锁失败：argv 含 zcode:// = 被协议唤起的第二实例（OS 已转发给首个实例），直接退出。
+  // argv 不含 zcode:// = 沙箱环境主实例，降级继续运行。
+  // 注意：app.quit() 在 whenReady 之前调用可能被 Electron 忽略（进程继续执行到创建窗口），
+  //       所以补 process.exit(0) 强制立即退出，避免新实例弹出空窗口覆盖主实例窗口。
+  const argvHasZcode = process.argv.some((a) => typeof a === 'string' && a.startsWith('zcode://'));
+  if (argvHasZcode) {
+    logInfo('[single-instance] second instance (zcode:// in argv), exiting');
+    try { app.quit(); } catch (_) {}
+    process.exit(0);
+  } else {
+    logInfo('[single-instance] lock failed without zcode:// (sandbox?), degraded mode');
+  }
+}
+
+// macOS open-url（whenReady 前可能触发，需缓存到 ready后再处理）
+let _macPendingUrl = null;
+app.on('open-url', (e, url) => {
+  e.preventDefault();
+  if (app.isReady()) handleOAuthCallback(url);
+  else _macPendingUrl = url;
+});
+
 // ===== 生命周期 =====
 app.whenReady().then(() => {
   logInfo(`main start (electron ${process.versions.electron}, chrome ${process.versions.chrome})`);
   logInfo('backend modules loaded: manager, switcher');
+
+  // 注册 zcode:// 协议处理器：浏览器登录后跳转 zcode://zai-auth/callback?code=&state=
+  // 捕获回调交给 handleOAuthCallback（state 校验 + resolve 登录 promise）
+  protocol.handle('zcode', (req) => {
+    logInfo('[protocol.handle] zcode url: ' + (req.url || '').slice(0, 200));
+    handleOAuthCallback(req.url);
+    return new Response(
+      '<html><body style="font-family:sans-serif;text-align:center;padding:60px">' +
+      '<h2>✅ 登录成功</h2><p>已返回 ZCode Account Switcher，可关闭此页面。</p></body></html>',
+      { headers: { 'content-type': 'text/html; charset=utf-8' } }
+    );
+  });
+  // setAsDefaultProtocolClient 注册系统协议 handler：
+  //   打包后 process.execPath 就是 exe 本身，直接 "<exe>" "%1" 能启动
+  //   开发模式下 electron.exe 需要知道加载哪个 app 目录，否则浏览器唤起
+  //   zcode:// 时系统启动 electron.exe "%1" 但找不到 main.js → "error launching app"。
+  //   故开发模式显式传 [appPath] 让命令行变成 electron.exe "<appPath>" "%1"。
+  const protoArgs = app.isPackaged ? [] : [app.getAppPath()];
+  const regOk = app.setAsDefaultProtocolClient('zcode', process.execPath, protoArgs);
+  logInfo('[setAsDefaultProtocolClient] zcode registered=' + regOk + ', execPath=' + process.execPath + ', args=' + JSON.stringify(protoArgs));
+
+  // 处理 macOS 在 whenReady 前缓存的回调 URL
+  if (_macPendingUrl) {
+    handleOAuthCallback(_macPendingUrl);
+    _macPendingUrl = null;
+  }
+
   createWindow();
 });
 
 app.on('window-all-closed', () => {
-  // 退出前停止 OAuth 轮询（系统浏览器由用户自行关闭）
-  stopOauthPolling();
+  // 退出前停止 OAuth 等待（系统浏览器由用户自行关闭）
+  stopOauthWait();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
-  stopOauthPolling();
+  stopOauthWait();
 });
 
 app.on('activate', () => {

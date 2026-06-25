@@ -30,16 +30,29 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
   const cleanup = () => {
     if (unsubFlowRef.current) { unsubFlowRef.current(); unsubFlowRef.current = null; }
   };
-  // 卸载兜底：取消事件订阅 + 通知主进程停轮询
+  // 卸载兜底：只清事件订阅。
+  // 不主动调 oauthCancel —— React.StrictMode 在开发模式会双调用 effect
+  // （mount → 模拟 unmount → 重新 mount），模拟卸载时若调 cancel 会把正在进行的
+  // oauthStart 误 resolve 成 {error:'cancelled'}，导致弹窗显示"出错：cancelled"。
+  // 取消流程交给 handleClose（用户主动关闭弹窗）处理。
   useEffect(() => {
     return () => {
       cleanup();
-      try { window.api.oauthCancel(); } catch (_) {}
     };
   }, []);
 
   // 入口：启动 CLI OAuth 流程
+  // 用 ref 防重入：React.StrictMode 在开发模式会双调用 effect（mount → unmount → mount），
+  // 若不挡会调用两次 oauthStart → 开两个浏览器窗口。
+  // 事件订阅也在这里做：StrictMode 第一次 mount 订阅后 cleanup 会取消，第二次 mount 必须重新订阅，
+  // 否则 saved 等事件无人接收。
+  const startedRef = useRef(false);
   useEffect(() => {
+    if (!unsubFlowRef.current) {
+      unsubFlowRef.current = window.api.onFlowEvent((event) => handleFlowEvent(event));
+    }
+    if (startedRef.current) return;   // StrictMode 第二次 mount 跳过 start
+    startedRef.current = true;
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -49,9 +62,6 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
     setBusy(true);
     setPhase('opening');
     setProgressMsg('正在打开系统浏览器...');
-
-    // 先订阅事件，避免漏早期事件
-    unsubFlowRef.current = window.api.onFlowEvent((event) => handleFlowEvent(event));
 
     const r = await window.api.oauthStart({});
     if (!r.ok) {
@@ -85,6 +95,8 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
         if (event.email) setEmail(event.email);
         if (event.skipped) {
           showToast('info', '该账号已存在（' + (event.account?.label || '已有') + '）');
+        } else if (event.billingReady === false) {
+          showToast('success', `已添加账号：${event.account?.label || event.email || '新账号'}（额度正在初始化，稍后自动刷新）`);
         } else {
           showToast('success', `已添加账号：${event.account?.label || event.email || '新账号'}`);
         }
@@ -163,14 +175,14 @@ export default function AddAccountModal({ onClose, onDone, showToast }) {
           </div>
         )}
 
-        {/* 正在保存账号 */}
+        {/* 正在保存账号 + 初始化额度 */}
         {phase === 'exchanging' && (
           <div className="oauth-panel">
             <div className="install-box">
               <ShieldCheck size={28} color="#22c55e" />
-              <strong>登录成功，正在保存账号...</strong>
+              <strong>登录成功，正在保存账号并初始化额度...</strong>
               <Loader2 size={20} className="spin" />
-              <span className="progress-hint">全程自动化，请稍候</span>
+              <span className="progress-hint">首次添加可能需要等待服务端初始化额度数据</span>
             </div>
           </div>
         )}
